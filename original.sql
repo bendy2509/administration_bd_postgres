@@ -228,6 +228,7 @@ FROM professeurs p
     AND ch.statut IN ('planifie', 'confirme')
 GROUP BY p.id, p.code, p.nom, p.prenom, pr.nom;
 
+-- Vue pour le calendrier academique
 CREATE OR REPLACE VIEW v_calendrier_academique AS
 SELECT
     m.code_matiere,
@@ -471,6 +472,240 @@ GRANT SELECT ON
     TO consultation;
 
 -- =============================================
+-- POLITIQUE DE SECURITE AU NIVEAU LIGNE (RLS)
+-- =============================================
+
+-- Activer RLS sur les tables sensibles
+ALTER TABLE professeurs
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE creneaux_horaires
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE affectations_professeurs
+    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE matieres
+    ENABLE ROW LEVEL SECURITY;
+
+-- =============================================
+-- Definition DES POLITIQUES RLS
+-- =============================================
+
+-- 1. Politique pour les professeurs : ne voir que leurs propres données
+CREATE POLICY professeur_own_data ON professeurs
+    FOR SELECT TO professeur_role
+    USING (email = current_user OR code = SPLIT_PART(current_user, '_', 2));
+
+CREATE POLICY professeur_own_creneaux ON creneaux_horaires
+    FOR ALL TO professeur_role
+    USING (professeur_id IN (SELECT id
+                             FROM professeurs
+                             WHERE email = current_user
+                                OR code = SPLIT_PART(current_user, '_', 2)));
+
+CREATE POLICY professeur_own_affectations ON affectations_professeurs
+    FOR SELECT TO professeur_role
+    USING (professeur_id IN (SELECT id
+                             FROM professeurs
+                             WHERE email = current_user
+                                OR code = SPLIT_PART(current_user, '_', 2)));
+
+-- 2. Politique pour les gestionnaires : voir les données de leur programme
+CREATE POLICY gestionnaire_programme_data ON professeurs
+    FOR SELECT TO gestionnaire
+    USING (programmes_id IN (SELECT id
+                             FROM programmes
+                             WHERE nom LIKE '%' || SPLIT_PART(current_user, '_', 2) || '%'));
+
+CREATE POLICY gestionnaire_programme_matieres ON matieres
+    FOR ALL TO gestionnaire
+    USING (programmes_id IN (SELECT id
+                             FROM programmes
+                             WHERE nom LIKE '%' || SPLIT_PART(current_user, '_', 2) || '%'));
+
+-- 3. Politique pour chcl_admin : accès complet (pas de restriction RLS)
+CREATE POLICY admin_full_access ON professeurs
+    FOR ALL TO chcl_admin
+    USING (true)
+    WITH CHECK (true);
+
+-- 4. Politique pour consultation : lecture seule des données actives
+CREATE POLICY consultation_read_only ON professeurs
+    FOR SELECT TO consultation
+    USING (actif = true);
+
+CREATE POLICY consultation_active_creneaux ON creneaux_horaires
+    FOR SELECT TO consultation
+    USING (statut IN ('planifie', 'confirme'));
+
+-- =============================================
+-- VUES SÉCURISÉES POUR DIFFÉRENTS RÔLES
+-- =============================================
+
+-- =============================================
+-- Vue sécurisée pour les professeurs (avec leurs données seulement)
+CREATE OR REPLACE VIEW v_mes_creneaux AS
+SELECT m.nom    AS matiere_nom,
+       ch.statut,
+       ch.type_seance,
+       ch.date_debut,
+       ch.date_fin,
+       s.numero AS salle_numero,
+       b.nom    AS batiment_nom
+FROM creneaux_horaires ch
+         JOIN matieres m ON ch.matiere_id = m.id
+         JOIN salles s ON ch.salle_id = s.id
+         JOIN batiments b ON s.batiment_id = b.id
+WHERE ch.professeur_id IN (SELECT id
+                           FROM professeurs
+                           WHERE email = current_user
+                              OR code = SPLIT_PART(current_user, '_', 2));
+
+-- Révoquer l'accès public à la vue
+REVOKE ALL ON v_mes_creneaux FROM PUBLIC;
+
+-- Accorder l'accès aux professeurs seulement
+GRANT SELECT ON v_mes_creneaux TO professeur_role;
+
+-- Vue sécurisée pour les gestionnaires (leurs programmes seulement)
+CREATE OR REPLACE VIEW v_mon_programme_creneaux AS
+SELECT ch.*,
+       p.nom || ' ' || p.prenom AS professeur,
+       m.nom                    AS matiere,
+       pr.nom                   AS programme,
+       s.numero                 AS salle
+FROM creneaux_horaires ch
+         JOIN professeurs p ON ch.professeur_id = p.id
+         JOIN matieres m ON ch.matiere_id = m.id
+         JOIN programmes pr ON p.programmes_id = pr.id
+         JOIN salles s ON ch.salle_id = s.id
+WHERE pr.id IN (SELECT programmes_id
+                FROM professeurs
+                WHERE email = current_user
+                   OR current_user LIKE 'gestionnaire_%');
+
+-- Accorder l'accès aux gestionnaires seulement
+GRANT SELECT ON v_mon_programme_creneaux TO gestionnaire;
+
+-- =============================================
+-- FONCTIONS SÉCURISÉES
+-- =============================================
+
+-- Fonction pour qu'un professeur puisse ajouter ses indisponibilités
+CREATE OR REPLACE FUNCTION ajouter_indisponibilite(
+    p_jour_semaine INTEGER,
+    p_heure_debut TIME,
+    p_heure_fin TIME,
+    p_date_debut DATE,
+    p_date_fin DATE,
+    p_raison TEXT DEFAULT 'Indisponibilité'
+) RETURNS INTEGER AS
+$$
+DECLARE
+    v_professeur_id INTEGER;
+    v_creneau_id    INTEGER;
+BEGIN
+    -- Vérifier que l'utilisateur est un professeur
+    IF NOT pg_has_role(current_user, 'professeur_role', 'MEMBER') THEN
+        RAISE EXCEPTION 'Seuls les professeurs peuvent déclarer des indisponibilités';
+    END IF;
+
+    -- Trouver l'ID du professeur
+    SELECT id
+    INTO v_professeur_id
+    FROM professeurs
+    WHERE email = current_user
+       OR code = SPLIT_PART(current_user, '_', 2);
+
+    IF v_professeur_id IS NULL THEN
+        RAISE EXCEPTION 'Professeur non trouvé';
+    END IF;
+
+    -- Vérifier la disponibilité
+    IF EXISTS (SELECT 1
+               FROM verifier_disponibilite(
+                       v_professeur_id,
+                       NULL,
+                       p_jour_semaine,
+                       p_heure_debut,
+                       p_heure_fin,
+                       p_date_debut
+                    )
+               WHERE NOT professeur_disponible) THEN
+        RAISE EXCEPTION 'Le professeur a déjà un créneau à ce moment';
+    END IF;
+
+    -- Insérer l'indisponibilité
+    INSERT INTO creneaux_horaires (professeur_id, matiere_id, salle_id,
+                                   jour_semaine, heure_debut, heure_fin,
+                                   date_debut, date_fin, type_seance, statut, notes)
+    VALUES (v_professeur_id, NULL, NULL,
+            p_jour_semaine, p_heure_debut, p_heure_fin,
+            p_date_debut, p_date_fin, 'indisponible', 'confirme',
+            p_raison)
+    RETURNING id INTO v_creneau_id;
+
+    RETURN v_creneau_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Accorder l'exécution aux professeurs
+GRANT EXECUTE ON FUNCTION ajouter_indisponibilite TO professeur_role;
+
+-- Fonction sécurisée pour modifier un créneau
+CREATE OR REPLACE FUNCTION modifier_creneau_professeur(
+    p_creneau_id INTEGER,
+    p_notes TEXT DEFAULT NULL,
+    p_statut VARCHAR(20) DEFAULT NULL
+) RETURNS BOOLEAN AS
+$$
+DECLARE
+    v_professeur_id         INTEGER;
+    v_current_professeur_id INTEGER;
+BEGIN
+    -- Vérifier l'appartenance du créneau
+    SELECT professeur_id
+    INTO v_professeur_id
+    FROM creneaux_horaires
+    WHERE id = p_creneau_id;
+
+    -- Trouver l'ID du professeur connecté
+    SELECT id
+    INTO v_current_professeur_id
+    FROM professeurs
+    WHERE email = current_user
+       OR code = SPLIT_PART(current_user, '_', 2);
+
+    -- Vérifier que le professeur modifie son propre créneau
+    IF v_professeur_id != v_current_professeur_id THEN
+        RAISE EXCEPTION 'Vous ne pouvez modifier que vos propres créneaux';
+    END IF;
+
+    -- Mettre à jour
+    UPDATE creneaux_horaires
+    SET notes      = COALESCE(p_notes, notes),
+        statut     = COALESCE(p_statut, statut),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = p_creneau_id;
+
+    RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION modifier_creneau_professeur TO professeur_role;
+
+
+-- Verification des politiques RLS
+SELECT schemaname,
+       tablename,
+       policyname,
+       permissive,
+       roles,
+       cmd,
+       qual
+FROM pg_policies
+WHERE schemaname = 'gestion_emploi_temps'
+ORDER BY tablename, policyname;
+
+-- =============================================
 -- DOCUMENTATION DES RÔLES ET PRIVILÈGES
 -- =============================================
 
@@ -511,6 +746,7 @@ Permissions:
 - Aucun droit d''ecriture
 - Filtrage des donnees inactives (RLS)
 ';
+
 
 
 -- =============================================
@@ -556,7 +792,7 @@ VALUES
 INSERT INTO professeurs (code, nom, prenom, sexe, email, telephone, programmes_id, date_embauche, actif)
 VALUES
 -- Conserver les deux premiers avec @ueh.edu.ht
-('PAM', 'AUGUSTIN', 'Pierre Michel', 'M', 'pierre.michel@ueh.edu.ht', '3611-1111', 1, '2015-09-01', true),
+('PAM', 'AUGUSTIN', 'Pierre Michel', 'M', 'pierre_michel.augustin@ueh.edu.ht', '3611-1111', 1, '2015-09-01', true),
 ('JP', 'PIERRE', 'Jaures', 'M', 'jaures.pierre@ueh.edu.ht', '3611-1112', 1, '2018-03-15', true),
 
 -- Tous les autres avec @chcl.edu.ht, format: prenom.nom@chcl.edu.ht
@@ -834,3 +1070,23 @@ WHERE ch1.statut IN ('planifie', 'confirme')
   AND ch2.statut IN ('planifie', 'confirme')
 LIMIT 5;
 
+
+-- =============================================
+-- CREATION D'UTILISATEURS DE TEST
+-- =============================================
+
+-- PROFESSEUR
+CREATE USER "pierre_michel.augustin@ueh.edu.ht" WITH PASSWORD 'bsbs';
+GRANT professeur_role TO "pierre_michel.augustin@ueh.edu.ht";
+
+-- GESTIONNAIRE
+CREATE USER "gestionnaire_smi@ueh.edu.ht" WITH PASSWORD 'bsbs';
+GRANT gestionnaire TO "gestionnaire_smi@ueh.edu.ht";
+
+-- CONSULTATION
+CREATE USER consult_user WITH PASSWORD 'bsbs';
+GRANT consultation TO consult_user;
+
+-- ADMIN
+CREATE USER chcl_admin_user WITH PASSWORD 'pass';
+GRANT chcl_admin TO chcl_admin_user;

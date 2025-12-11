@@ -228,6 +228,7 @@ FROM professeurs p
     AND ch.statut IN ('planifie', 'confirme')
 GROUP BY p.id, p.code, p.nom, p.prenom, pr.nom;
 
+-- Vue pour le calendrier academique
 CREATE OR REPLACE VIEW v_calendrier_academique AS
 SELECT m.code_matiere,
        m.nom                                          AS matiere,
@@ -390,16 +391,6 @@ CREATE ROLE consultation WITH
 COMMENT ON ROLE consultation IS 'Role pour consultation seule des emplois du temps';
 
 -- =============================================
--- CREATION D'UTILISATEURS SPECIFIQUES
--- =============================================
-
--- Administrateurs specifiques
-CREATE USER admin_servilus WITH
-    PASSWORD 'bsbs'
-    IN ROLE chcl_admin
-    VALID UNTIL '2026-12-31';
-
--- =============================================
 -- ATTRIBUTION DES PRIVILEGES PAR ROLE
 -- =============================================
 
@@ -483,6 +474,10 @@ ALTER TABLE affectations_professeurs
 ALTER TABLE matieres
     ENABLE ROW LEVEL SECURITY;
 
+-- =============================================
+-- Definition DES POLITIQUES RLS
+-- =============================================
+
 -- 1. Politique pour les professeurs : ne voir que leurs propres données
 CREATE POLICY professeur_own_data ON professeurs
     FOR SELECT TO professeur_role
@@ -502,7 +497,6 @@ CREATE POLICY professeur_own_affectations ON affectations_professeurs
                              WHERE email = current_user
                                 OR code = SPLIT_PART(current_user, '_', 2)));
 
--- 2. Politique pour les gestionnaires : voir les données de leur programme
 CREATE POLICY gestionnaire_programme_data ON professeurs
     FOR SELECT TO gestionnaire
     USING (programmes_id IN (SELECT id
@@ -515,29 +509,24 @@ CREATE POLICY gestionnaire_programme_matieres ON matieres
                              FROM programmes
                              WHERE nom LIKE '%' || SPLIT_PART(current_user, '_', 2) || '%'));
 
--- 3. Politique pour chcl_admin : accès complet (pas de restriction RLS)
 CREATE POLICY admin_full_access ON professeurs
     FOR ALL TO chcl_admin
     USING (true)
     WITH CHECK (true);
 
--- 4. Politique pour consultation : lecture seule des données actives
 CREATE POLICY consultation_read_only ON professeurs
     FOR SELECT TO consultation
     USING (actif = true);
 
-CREATE POLICY consultation_active_creneaux ON creneaux_horaires
-    FOR SELECT TO consultation
-    USING (statut IN ('planifie', 'confirme'));
 
 -- =============================================
--- VUES SÉCURISÉES POUR DIFFÉRENTS RÔLES
--- =============================================
-
 -- Vue sécurisée pour les professeurs (avec leurs données seulement)
 CREATE OR REPLACE VIEW v_mes_creneaux AS
-SELECT ch.*,
-       m.nom    AS matiere_nom,
+SELECT m.nom    AS matiere_nom,
+       ch.statut,
+       ch.type_seance,
+       ch.date_debut,
+       ch.date_fin,
        s.numero AS salle_numero,
        b.nom    AS batiment_nom
 FROM creneaux_horaires ch
@@ -548,6 +537,14 @@ WHERE ch.professeur_id IN (SELECT id
                            FROM professeurs
                            WHERE email = current_user
                               OR code = SPLIT_PART(current_user, '_', 2));
+
+-- =============================================
+-- VUES SÉCURISÉES POUR DIFFÉRENTS RÔLES
+-- =============================================
+
+CREATE POLICY consultation_active_creneaux ON creneaux_horaires
+    FOR SELECT TO consultation
+    USING (statut IN ('planifie', 'confirme'));
 
 -- Révoquer l'accès public à la vue
 REVOKE ALL ON v_mes_creneaux FROM PUBLIC;
@@ -682,28 +679,6 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION modifier_creneau_professeur TO professeur_role;
 
--- =============================================
--- CONFIGURATION DES PARAMETRES DE SECURITE
--- =============================================
-
--- Creation d'un role pour forcer la connexion SSL
-CREATE ROLE ssl_required WITH NOLOGIN;
-ALTER ROLE ssl_required SET ssl TO 'require';
-
--- Assigner ce role a tous les utilisateurs
-GRANT ssl_required TO
-    chcl_admin,
-    gestionnaire,
-    professeur_role,
-    consultation,
-    gestionnaire_math,
-    gestionnaire_physique,
-    etudiant_consult,
-    admin_bureau;
-
--- =============================================
--- TEST DES POLITIQUES DE SECURITE
--- =============================================
 
 -- Verification des politiques RLS
 SELECT schemaname,
@@ -760,6 +735,26 @@ Permissions:
 ';
 
 -- =============================================
+-- CREATION D'UTILISATEURS DE TEST
+-- =============================================
+
+-- PROFESSEUR
+CREATE USER "pierre_michel.augustin@ueh.edu.ht" WITH PASSWORD 'bsbs';
+GRANT professeur_role TO "pierre_michel.augustin@ueh.edu.ht";
+
+-- GESTIONNAIRE
+CREATE USER "gestionnaire_smi@ueh.edu.ht" WITH PASSWORD 'bsbs';
+GRANT gestionnaire TO "gestionnaire_smi@ueh.edu.ht";
+
+-- CONSULTATION
+CREATE USER consult_user WITH PASSWORD 'bsbs';
+GRANT consultation TO consult_user;
+
+-- ADMIN
+CREATE USER chcl_admin_user WITH PASSWORD 'pass';
+GRANT chcl_admin TO chcl_admin_user;
+
+-- =============================================
 -- INSERTION DE DONNEES REALISTES
 -- Programme: Premiere annee université CHCL
 -- Annee academique: 2024-2025
@@ -802,7 +797,7 @@ VALUES
 INSERT INTO professeurs (code, nom, prenom, sexe, email, telephone, programmes_id, date_embauche, actif)
 VALUES
 -- Conserver les deux premiers avec @ueh.edu.ht
-('PAM', 'AUGUSTIN', 'Pierre Michel', 'M', 'pierre.michel@ueh.edu.ht', '3611-1111', 1, '2015-09-01', true),
+('PAM', 'AUGUSTIN', 'Pierre Michel', 'M', 'pierre_michel.augustin@ueh.edu.ht', '3611-1111', 1, '2015-09-01', true),
 ('JP', 'PIERRE', 'Jaures', 'M', 'jaures.pierre@ueh.edu.ht', '3611-1112', 1, '2018-03-15', true),
 
 -- Tous les autres avec @chcl.edu.ht, format: prenom.nom@chcl.edu.ht
