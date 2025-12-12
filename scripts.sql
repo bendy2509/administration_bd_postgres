@@ -10,12 +10,13 @@
 -- (Creation des tables, contraintes, index et vues)
 -- =============================================
 
--- Extension pour les contraintes d'exclusion
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-
 -- Schema principal
 CREATE SCHEMA IF NOT EXISTS gestion_emploi_temps;
 SET search_path TO gestion_emploi_temps;
+
+-- Extension pour les contraintes d'exclusion
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 
 -- Table des programmes/departements
 CREATE TABLE programmes

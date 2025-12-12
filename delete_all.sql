@@ -1,32 +1,97 @@
 -- =============================================
--- SCRIPT DE NETTOYAGE COMPLET (A executer avant de relancer le script DDL)
+-- SCRIPT DE RESET COMPLET - PROJET CHCL
 -- =============================================
 
--- 1. REVOCATION ET SUPPRESSION DES UTILISATEURS DE TEST (Roles LOGIN)
--- Important : Le nom d'utilisateur avec @ doit etre entre guillemets doubles.
+-- Sécurité : arrêter si erreur
+-- \set ON_ERROR_STOP on
 
-DROP USER IF EXISTS "pierre_michel.augustin@ueh.edu.ht";
-DROP USER IF EXISTS "gestionnaire_informatique@ueh.edu.ht";
-DROP USER IF EXISTS consult_user;
-DROP USER IF EXISTS chcl_admin_user;
+-- 1. Supprimer les triggers
+DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trigger_update_creneaux_timestamp') THEN
+            DROP TRIGGER trigger_update_creneaux_timestamp ON gestion_emploi_temps.creneaux_horaires;
+        END IF;
+    END$$;
 
--- 2. SUPPRESSION DES ROLES (Groupes)
--- Assurez-vous qu'aucun autre utilisateur n'est membre de ces roles avant de les supprimer
-DROP ROLE IF EXISTS consultation;
-DROP ROLE IF EXISTS professeur_role;
-DROP ROLE IF EXISTS gestionnaire;
-DROP ROLE IF EXISTS chcl_admin;
+-- 2. Supprimer les fonctions
+DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE;
+DROP FUNCTION IF EXISTS verifier_disponibilite(INTEGER, INTEGER, INTEGER, TIME, TIME, DATE) CASCADE;
+DROP FUNCTION IF EXISTS ajouter_indisponibilite(INTEGER, TIME, TIME, DATE, DATE, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS modifier_creneau_professeur(INTEGER, TEXT, VARCHAR) CASCADE;
+
+-- 3. Supprimer les vues
+DROP VIEW IF EXISTS v_mes_creneaux CASCADE;
+DROP VIEW IF EXISTS v_statistiques_professeurs CASCADE;
+DROP VIEW IF EXISTS v_disponibilite_salles CASCADE;
+DROP VIEW IF EXISTS v_emploi_temps_professeurs CASCADE;
+
+-- 4. Supprimer les tables (ordre dépendances)
+DROP TABLE IF EXISTS gestion_emploi_temps.affectations_professeurs CASCADE;
+DROP TABLE IF EXISTS gestion_emploi_temps.creneaux_horaires CASCADE;
+DROP TABLE IF EXISTS gestion_emploi_temps.matieres CASCADE;
+DROP TABLE IF EXISTS gestion_emploi_temps.professeurs CASCADE;
+DROP TABLE IF EXISTS gestion_emploi_temps.salles CASCADE;
+DROP TABLE IF EXISTS gestion_emploi_temps.batiments CASCADE;
+DROP TABLE IF EXISTS gestion_emploi_temps.programmes CASCADE;
+
+-- 5. Supprimer les séquences automatiquement créées avec les SERIAL
+DO $$
+    DECLARE r RECORD;
+    BEGIN
+        FOR r IN
+            SELECT sequence_schema, sequence_name
+            FROM information_schema.sequences
+            WHERE sequence_schema = 'gestion_emploi_temps'
+            LOOP
+                EXECUTE format('DROP SEQUENCE IF EXISTS %I.%I CASCADE', r.sequence_schema, r.sequence_name);
+            END LOOP;
+    END$$;
+
+-- 6. Supprimer les rôles créés
+DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chcl_admin') THEN
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM chcl_admin';
+            DROP ROLE chcl_admin;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gestionnaire') THEN
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM gestionnaire';
+            DROP ROLE gestionnaire;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'professeur_role') THEN
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM professeur_role';
+            DROP ROLE professeur_role;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'consultation') THEN
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM consultation';
+            DROP ROLE consultation;
+        END IF;
+    END$$;
 
 
--- 3. SUPPRESSION DU SCHEMA PRINCIPAL ET DE TOUT CE QU'IL CONTIENT
--- CASCADE supprime toutes les tables, vues, fonctions et sequences qui se trouvent a l'interieur.
+-- 7. Supprimer les utilisateurs créés
+DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_user WHERE usename = 'pierre_michel.augustin@ueh.edu.ht') THEN
+            DROP USER "pierre_michel.augustin@ueh.edu.ht";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_user WHERE usename = 'gestionnaire_informatique@ueh.edu.ht') THEN
+            DROP USER "gestionnaire_informatique@ueh.edu.ht";
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_user WHERE usename = 'consult_user') THEN
+            DROP USER consult_user;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_user WHERE usename = 'chcl_admin_user') THEN
+            DROP USER chcl_admin_user;
+        END IF;
+    END$$;
+
+-- 8. Supprimer le schéma
 DROP SCHEMA IF EXISTS gestion_emploi_temps CASCADE;
 
--- 4. SUPPRESSION DE L'EXTENSION
-DROP EXTENSION IF EXISTS btree_gist;
+-- 9. Supprimer l’extension
+DROP EXTENSION IF EXISTS btree_gist CASCADE;
 
--- Suppression des fonctions/vues/triggers qui pourraient avoir ete creees
--- Si vous avez des doutes sur l'emplacement des fonctions/vues, la suppression du schema le gere.
--- Si des fonctions etaient creees hors du schema, il faudrait les supprimer explicitement (mais ici, elles sont dans le schema).
-
--- Fin du script de nettoyage
+-- =============================================
+-- RESET COMPLET TERMINE
+-- =============================================
