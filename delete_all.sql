@@ -51,19 +51,19 @@ DO $$
 DO $$
     BEGIN
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chcl_admin') THEN
-            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM chcl_admin';
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE gestion_emploi_temps FROM chcl_admin';
             DROP ROLE chcl_admin;
         END IF;
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gestionnaire') THEN
-            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM gestionnaire';
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE gestion_emploi_temps FROM gestionnaire';
             DROP ROLE gestionnaire;
         END IF;
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'professeur_role') THEN
-            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM professeur_role';
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE gestion_emploi_temps FROM professeur_role';
             DROP ROLE professeur_role;
         END IF;
         IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'consultation') THEN
-            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE chcl_db FROM consultation';
+            EXECUTE 'REVOKE ALL PRIVILEGES ON DATABASE gestion_emploi_temps FROM consultation';
             DROP ROLE consultation;
         END IF;
     END$$;

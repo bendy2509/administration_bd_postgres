@@ -848,4 +848,3 @@ SELECT planifier_nouveau_cours_transactionnel(
                '2025-01-25'
        );
 
-
